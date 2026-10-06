@@ -1,0 +1,83 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: egress-proof-demo
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: workload
+  namespace: egress-proof-demo
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client
+  namespace: egress-proof-demo
+  labels:
+    app: client
+spec:
+  serviceAccountName: workload
+  containers:
+    - name: client
+      image: busybox:1.37.0
+      command: ["sleep", "3600"]
+      resources:
+        requests: {cpu: 5m, memory: 8Mi}
+        limits: {cpu: 50m, memory: 32Mi}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: allowed
+  namespace: egress-proof-demo
+  labels:
+    app: allowed
+spec:
+  containers:
+    - name: http
+      image: busybox:1.37.0
+      command: ["httpd", "-f", "-p", "8080"]
+      resources:
+        requests: {cpu: 5m, memory: 8Mi}
+        limits: {cpu: 50m, memory: 32Mi}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: denied
+  namespace: egress-proof-demo
+  labels:
+    app: denied
+spec:
+  containers:
+    - name: http
+      image: busybox:1.37.0
+      command: ["httpd", "-f", "-p", "8080"]
+      resources:
+        requests: {cpu: 5m, memory: 8Mi}
+        limits: {cpu: 50m, memory: 32Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: allowed
+  namespace: egress-proof-demo
+spec:
+  clusterIP: 10.96.0.50
+  selector: {app: allowed}
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: denied
+  namespace: egress-proof-demo
+spec:
+  clusterIP: 10.96.0.51
+  selector: {app: denied}
+  ports:
+    - port: 8080
+      targetPort: 8080

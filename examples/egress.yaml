@@ -1,0 +1,10 @@
+namespace: egress-proof-demo
+podSelector: app=client
+reachable:
+  - allowed.egress-proof-demo.svc.cluster.local
+  - allowed.egress-proof-demo.svc.cluster.local:8080
+  - 10.96.0.50:8080
+  - https://example.com
+blocked:
+  - denied.egress-proof-demo.svc.cluster.local:8080
+  - 10.96.0.51:8080
