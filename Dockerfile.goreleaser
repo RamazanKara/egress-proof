@@ -1,0 +1,5 @@
+FROM gcr.io/distroless/static-debian12:nonroot
+ARG TARGETPLATFORM
+COPY --chmod=0555 $TARGETPLATFORM/egress-proof /egress-proof
+COPY --chmod=0555 $TARGETPLATFORM/egress-proof-probe /egress-proof-probe
+ENTRYPOINT ["/egress-proof-probe"]

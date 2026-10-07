@@ -1,0 +1,66 @@
+name: Egress proof on kind
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOMAXPROCS: "2"
+  GOFLAGS: -p=2
+
+jobs:
+  egress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Build CLI and probe image
+        run: |
+          go build -o bin/egress-proof ./cmd/egress-proof
+          CGO_ENABLED=0 go build -o bin/egress-proof-probe ./cmd/egress-proof-probe
+          docker build -t egress-proof-probe:ci .
+      - uses: helm/kind-action@v1
+        with:
+          version: v0.32.0
+          kubectl_version: v1.36.1
+          cluster_name: egress-proof-ci
+          node_image: kindest/node:v1.36.1
+          config: demo/kind.yaml
+          wait: 0s
+      - name: Install enforcing CNI and fixtures
+        run: |
+          kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.33.0/manifests/calico.yaml
+          kubectl -n kube-system rollout status daemonset/calico-node --timeout=180s
+          kubectl -n kube-system rollout status deployment/calico-kube-controllers --timeout=180s
+          kubectl wait --for=condition=Ready nodes --all --timeout=120s
+          kind load docker-image egress-proof-probe:ci --name egress-proof-ci
+          kubectl apply -f demo/workloads.yaml
+          kubectl -n egress-proof-demo wait --for=condition=Ready pods --all --timeout=120s
+      - name: Confirm destinations are live before enforcing policy
+        run: |
+          sed '/^blocked:$/d' examples/egress.yaml > baseline.yaml
+          bin/egress-proof --spec baseline.yaml --image egress-proof-probe:ci --out evidence/baseline
+      - name: Prove allowed and blocked egress
+        run: |
+          kubectl apply -f demo/policy.yaml
+          bin/egress-proof --spec examples/egress.yaml --image egress-proof-probe:ci --out evidence/enforced
+      - name: Confirm removing policy fails the gate
+        run: |
+          kubectl delete -f demo/policy.yaml
+          status=0
+          bin/egress-proof --spec examples/egress.yaml --image egress-proof-probe:ci --out evidence/policy-removed || status=$?
+          test "$status" -eq 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: egress-evidence
+          path: evidence/
+          if-no-files-found: warn
+      - name: Delete disposable cluster
+        if: always()
+        run: kind delete cluster --name egress-proof-ci

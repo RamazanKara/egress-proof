@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOMAXPROCS: "2"
+  GOFLAGS: -p=2
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -parallel 2 ./...
+      - run: go build ./...
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2

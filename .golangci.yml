@@ -1,0 +1,27 @@
+version: "2"
+
+run:
+  concurrency: 2
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (net.Conn).Close
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [errcheck]
+      - text: "^QF"
+        linters: [staticcheck]

@@ -1,0 +1,54 @@
+version: 2
+project_name: egress-proof
+
+builds:
+  - id: cli
+    main: ./cmd/egress-proof
+    binary: egress-proof
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath, -p=2]
+    ldflags: [-s -w]
+  - id: probe
+    main: ./cmd/egress-proof-probe
+    binary: egress-proof-probe
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath, -p=2]
+    ldflags: [-s -w]
+
+archives:
+  - ids: [cli]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - examples/egress.yaml
+
+checksum:
+  name_template: checksums.txt
+
+dockers_v2:
+  - ids: [cli, probe]
+    dockerfile: Dockerfile.goreleaser
+    images: [ghcr.io/ramazankara/egress-proof]
+    tags:
+      - "{{ .Version }}"
+      - "{{ if and (not .IsSnapshot) (not .Prerelease) }}latest{{ end }}"
+    platforms: [linux/amd64, linux/arm64]
+    sbom: false
+    labels:
+      org.opencontainers.image.source: https://github.com/RamazanKara/egress-proof
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+
+changelog:
+  sort: asc
+
+release:
+  prerelease: auto
