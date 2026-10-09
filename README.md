@@ -4,6 +4,10 @@ Test Kubernetes egress from short-lived probe pods and keep the evidence. A Go C
 using client-go; no operator, CRDs, or NetworkPolicy YAML inspection. It records
 observed DNS, TCP, and TLS results.
 
+Validate specs offline with `--validate`, inspect verdicts with `--explain`, and
+share the generated Markdown summary. These additions are unreleased; build this
+checkout to use them.
+
 ## Install
 
 Download the archive for your OS and architecture from
@@ -42,7 +46,7 @@ egress-proof --spec examples/egress.yaml --image ghcr.io/ramazankara/egress-proo
 ```
 
 With healthy fixtures and enforced policy, expect **6 passed, 0 failed, 0 errors**,
-with `evidence/evidence.json` and `evidence/junit.xml`. The demo allows DNS,
+with `evidence/evidence.json`, `evidence/junit.xml`, and `evidence/summary.md`. The demo allows DNS,
 a local service, and example.com TLS,
 and blocks a second live service. It needs outbound DNS/HTTPS. Remove the policy
 and rerun the same command: it should exit **1**, with two failed blocked checks.
@@ -51,15 +55,24 @@ Delete the demo with `kubectl delete -f demo/workloads.yaml` when finished.
 ## Build
 
 Building this checkout requires Go 1.26.9 or newer. The local gate also requires
-GNU Make, a C compiler for Go's race detector, and golangci-lint 2.12.2 on PATH:
+GNU Make, golangci-lint 2.12.2, and govulncheck 1.8.0 on PATH. Install the Go tools:
 
 ```sh
-make lint test build
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+gofmt -l cmd internal
+make lint test fuzz vuln build
 go tool cover -func=coverage.out
 ```
 
-`lint` runs vet and golangci-lint; `test` runs every package with `-race` and writes
-`coverage.out`; `build` writes both commands to `bin/` for the current OS.
+`gofmt -l` must produce no output. `lint` runs vet and golangci-lint (including
+staticcheck); `test` writes `coverage.out` and uses `-race` when
+`go env CGO_ENABLED` is `1`. The race detector requires a working C compiler;
+without one, set `CGO_ENABLED=0` and record that race tests were skipped.
+`fuzz` exercises all four parsers for five seconds each with two workers;
+`vuln` checks the current Go vulnerability database. `build` writes both commands
+to `bin/` for the current OS. See [local release preparation](docs/local-release.md)
+for a build with `SHA256SUMS`, without Actions or publishing.
 On Windows the CLI is `bin/egress-proof.exe`. Running it against a cluster requires
 a Linux probe image and an enforcing CNI such as
 [Calico](https://docs.tigera.io/calico/latest/getting-started/kubernetes/kind).
@@ -122,10 +135,47 @@ Only timeouts satisfy `blocked`. NXDOMAIN, connection refusal, missing routes,
 certificate errors, incomplete probes, and API failures are errors, not passing
 block evidence. DNS failure for a TCP/HTTPS destination is also inconclusive.
 
+## Validate and explain
+
+Check a spec before accessing a cluster:
+
+```sh
+egress-proof --spec examples/egress.yaml --validate
+```
+
+This exits **0** for a valid spec and **2** for invalid input, prints the check
+count and hash, and neither loads a kubeconfig nor creates pods or reports.
+Validation checks YAML fields, namespace and selector syntax, destinations, and
+duplicates. Errors include the file and YAML line, for example:
+
+```text
+egress.yaml: line 4: reachable[2]: destination "http://example.com" must be an HTTPS URL without credentials or fragment
+```
+
+Destination indexes are one-based. Errors in aliased lists refer to the list
+definition; merged fields refer to their source. Validation cannot check RBAC,
+image availability, selected pods, DNS, or network reachability.
+
+For a real cluster run, add `--explain`:
+
+```sh
+egress-proof --spec examples/egress.yaml --image ghcr.io/ramazankara/egress-proof:latest --explain
+```
+
+Each result then includes its verdict reason and ordered DNS/TCP/TLS stages with
+addresses, durations, and errors. For a blocked HTTPS destination, a successful
+TCP connection still fails the expectation even if the certificate is invalid.
+Refused connections, DNS errors, and cancellation remain inconclusive; only
+timeouts satisfy blocked expectations. The flag does not change verdicts or exit
+codes. If combined with `--validate`, validation takes precedence.
+
 ## Evidence format
 
-Every validated run writes `evidence.json` and `junit.xml` under `--out`, including
-failed runs. Use a different directory per run to retain history. JSON currently
+Every cluster run with a valid spec writes `evidence.json`, `junit.xml`, and
+`summary.md` under `--out`, including failed runs. Use a different directory per
+run to retain history. `summary.md` contains counts, cluster metadata, verdict
+explanations, probe stages, and run errors, ready to include in a review or an
+incident report. JSON remains the complete machine-readable evidence. JSON currently
 has `schemaVersion: "1"`:
 
 | Fields | Meaning |
@@ -165,7 +215,8 @@ For your workloads, change the namespace, spec, schedule, and deadline; pin both
 image references to the same released version or digest. The demo client sleeps
 for one hour; use long-lived workloads for ongoing schedules. The PVC needs a default
 StorageClass (or an explicit class suitable for your cluster). Each run writes
-`/evidence/<job-pod-name>/{evidence.json,junit.xml}`. Mount the `egress-proof-evidence`
+`/evidence/<job-pod-name>/{evidence.json,junit.xml,summary.md}` when using this build.
+Mount the `egress-proof-evidence`
 claim in your exporter/reader as UID 65532 to collect these files; the CLI image
 has no shell or `tar`. Job expiry preserves the PVC, so archive/prune old evidence
 separately. Deleting the PVC can delete its reports. The runner needs API access
@@ -183,12 +234,13 @@ that needs manual deletion; a hard kill can also prevent writing the report.
 Copy [examples/github/kind.yml](examples/github/kind.yml) into `.github/workflows/`
 to enable the manually dispatched example. It builds the probe image, installs
 Calico into kind, checks an all-reachable baseline, proves the policy, and verifies
-that removing it fails the gate. Both evidence formats are uploaded even on failure,
-and the disposable cluster is deleted. This stays separate from the one-job CI
-workflow, which runs `make lint test build` on pushes or dispatch. GitHub Actions
-availability is not required for the local gate. The separate
-[release workflow](.github/workflows/release.yml) runs on `v*` tags using
-[GoReleaser's configuration](.goreleaser.yml).
+that removing it fails the gate. The evidence directory is uploaded even on failure,
+and the disposable cluster is deleted. This opt-in example stays separate from
+the single [CI workflow](.github/workflows/ci.yml), which checks formatting and
+runs `make lint test fuzz vuln build` on pushes or dispatch. Its release job runs
+only for `v*` tag pushes after verification, using
+[GoReleaser's configuration](.goreleaser.yml). GitHub Actions availability is not
+required for the local gate or [local release builds](docs/local-release.md).
 
 ## Limits
 

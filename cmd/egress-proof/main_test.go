@@ -31,11 +31,50 @@ func TestUsage(t *testing.T) {
 		{[]string{"--spec", "spec.yaml", "--image", ""}, 2},
 		{[]string{"--spec", "spec.yaml", "--out", ""}, 2},
 		{[]string{"--spec", "spec.yaml", "extra"}, 2},
+		{[]string{"--validate"}, 2}, {[]string{"--explain"}, 2},
 	} {
 		var output bytes.Buffer
 		if got := run(context.Background(), tt.args, &output, &output); got != tt.code {
 			t.Fatalf("%v: exit %d, want %d", tt.args, got, tt.code)
 		}
+	}
+}
+
+func TestValidateOffline(t *testing.T) {
+	for _, tt := range []struct {
+		name, data, message string
+		code                int
+	}{
+		{"namespace", "namespace: team\nreachable: [example.com]\n", "1 checks, sha256:", 0},
+		{"selector", "podSelector: app=api\nreachable: [example.com]\nblocked: ['192.0.2.1:443']\n", "2 checks, sha256:", 0},
+		{"invalid-destination", "namespace: team\nblocked:\n  - http://example.com\n", "line 3: blocked[1]:", 2},
+		{"unknown-field", "namespace: team\nreachble: [example.com]\n", "line 2: field reachble", 2},
+		{"malformed-yaml", "namespace: team\nreachable: [\n", "parse spec: yaml:", 2},
+		{"empty", "", "line 1: spec is empty", 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "spec.yaml")
+			out := filepath.Join(dir, "reports")
+			if err := os.WriteFile(path, []byte(tt.data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			code := run(context.Background(), []string{"--spec", path, "--validate", "--explain", "--kubeconfig", filepath.Join(dir, "missing"), "--out", out}, &stdout, &stderr)
+			if code != tt.code {
+				t.Fatalf("exit %d, want %d: %s", code, tt.code, &stderr)
+			}
+			if tt.code == 0 {
+				if !strings.Contains(stdout.String(), "valid spec: "+path) || !strings.Contains(stdout.String(), tt.message) || stderr.Len() != 0 {
+					t.Fatalf("stdout %q, stderr %q", &stdout, &stderr)
+				}
+			} else if stdout.Len() != 0 || !strings.Contains(stderr.String(), path+": ") || !strings.Contains(stderr.String(), tt.message) {
+				t.Fatalf("stdout %q, stderr %q", &stdout, &stderr)
+			}
+			if _, err := os.Stat(out); !os.IsNotExist(err) {
+				t.Fatalf("validation created reports: %v", err)
+			}
+		})
 	}
 }
 
@@ -65,18 +104,22 @@ func TestClusterRun(t *testing.T) {
 	for _, tt := range []struct {
 		name, outcome string
 		code          int
+		explain       bool
 	}{
-		{"success", "reachable", 0},
-		{"mismatch", "unreachable", 1},
-		{"inconclusive", "error", 2},
-		{"version-error", "", 2},
+		{"success", "reachable", 0, false},
+		{"mismatch", "unreachable", 1, false},
+		{"inconclusive", "error", 2, false},
+		{"version-error", "", 2, false},
+		{"explained-success", "reachable", 0, true},
+		{"explained-mismatch", "unreachable", 1, true},
+		{"explained-error", "error", 2, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var mu sync.Mutex
 			var pod *corev1.Pod
 			now := time.Now().UTC()
 			obs := probe.Observation{Destination: "example.com", StartedAt: now, FinishedAt: now, Outcome: tt.outcome,
-				Stages: []probe.Stage{{Name: "dns", Address: "example.com", Success: tt.outcome == "reachable"}}}
+				Stages: []probe.Stage{{Name: "dns", Address: "example.com", DurationMS: 42, Success: tt.outcome == "reachable"}}}
 			if tt.outcome != "reachable" {
 				obs.Error = "lookup failed"
 				obs.Stages[0].Error = obs.Error
@@ -141,9 +184,26 @@ func TestClusterRun(t *testing.T) {
 				t.Fatal(err)
 			}
 			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), []string{"--spec", specPath, "--image", "probe:test", "--out", dir}, &stdout, &stderr)
+			args := []string{"--spec", specPath, "--image", "probe:test", "--out", dir}
+			if tt.explain {
+				args = append(args, "--explain")
+			}
+			code := run(context.Background(), args, &stdout, &stderr)
 			if code != tt.code || !strings.Contains(stdout.String(), "reports: "+dir) {
 				t.Fatalf("exit %d, want %d; stdout %q, stderr %q", code, tt.code, &stdout, &stderr)
+			}
+			if strings.Contains(stdout.String(), "  dns example.com (42 ms):") != tt.explain {
+				t.Fatalf("unexpected explanation details: %s", &stdout)
+			}
+			if tt.explain {
+				for _, text := range []string{probe.Explain("reachable", obs), "error: lookup failed"} {
+					if text == "error: lookup failed" && tt.outcome == "reachable" {
+						continue
+					}
+					if !strings.Contains(stdout.String(), text) {
+						t.Fatalf("explanation missing %q: %s", text, &stdout)
+					}
+				}
 			}
 			data, err := os.ReadFile(filepath.Join(dir, "evidence.json"))
 			if err != nil {
@@ -165,6 +225,10 @@ func TestClusterRun(t *testing.T) {
 			}
 			if _, err := os.Stat(filepath.Join(dir, "junit.xml")); err != nil {
 				t.Fatal(err)
+			}
+			markdown, err := os.ReadFile(filepath.Join(dir, "summary.md"))
+			if err != nil || !strings.Contains(string(markdown), fmt.Sprintf("**%d passed, %d failed, %d errors**", r.Summary.Passed, r.Summary.Failed, r.Summary.Errors)) {
+				t.Fatalf("missing Markdown summary: %s, %v", markdown, err)
 			}
 		})
 	}

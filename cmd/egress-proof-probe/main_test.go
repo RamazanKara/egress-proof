@@ -76,3 +76,34 @@ func TestCancelledProbeAndOutputFailure(t *testing.T) {
 		t.Fatalf("write error lost: exit %d, stderr %q", code, &stderr)
 	}
 }
+
+func FuzzProbeInput(f *testing.F) {
+	for _, seed := range []string{"", "[]", "null", "[1]", `["localhost","127.0.0.1:443","invalid/path"]`} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		var stdout, stderr bytes.Buffer
+		code := run(ctx, input, &stdout, &stderr)
+		if code == 2 {
+			if stdout.Len() != 0 || stderr.Len() == 0 {
+				t.Fatal("invalid input did not produce an error")
+			}
+			return
+		}
+		var observations []probe.Observation
+		if code != 0 || stderr.Len() != 0 || json.Unmarshal(stdout.Bytes(), &observations) != nil || len(observations) == 0 {
+			t.Fatalf("invalid probe output: exit %d, %q, %q", code, &stdout, &stderr)
+		}
+		var destinations []string
+		if err := json.Unmarshal([]byte(input), &destinations); err != nil || len(destinations) != len(observations) {
+			t.Fatalf("accepted invalid input: %v", err)
+		}
+		for i, obs := range observations {
+			if obs.Destination != destinations[i] || obs.Outcome != "error" || obs.Error == "" {
+				t.Fatalf("cancelled probe produced connectivity evidence: %+v", obs)
+			}
+		}
+	})
+}

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/RamazanKara/egress-proof/internal/probe"
 	"github.com/RamazanKara/egress-proof/internal/report"
 	"github.com/RamazanKara/egress-proof/internal/runner"
 	"github.com/RamazanKara/egress-proof/internal/spec"
@@ -34,7 +35,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	path := fs.String("spec", "", "YAML spec to test (required)")
 	image := fs.String("image", "egress-proof-probe:dev", "probe image available to the cluster")
 	kubeconfig := fs.String("kubeconfig", "", "kubeconfig path (defaults to KUBECONFIG or ~/.kube/config)")
-	out := fs.String("out", "evidence", "directory for evidence.json and junit.xml")
+	out := fs.String("out", "evidence", "directory for evidence.json, junit.xml, and summary.md")
+	validate := fs.Bool("validate", false, "validate the spec without contacting a cluster or writing reports")
+	explain := fs.Bool("explain", false, "show verdict reasons and DNS/TCP/TLS stage details")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -42,7 +45,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *path == "" || *image == "" || *out == "" || fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: egress-proof --spec FILE [--image IMAGE] [--kubeconfig FILE] [--out DIR]")
+		fmt.Fprintln(stderr, "usage: egress-proof --spec FILE [--validate] [--explain] [--image IMAGE] [--kubeconfig FILE] [--out DIR]")
 		return 2
 	}
 	data, err := os.ReadFile(*path)
@@ -52,8 +55,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	s, hash, err := spec.Parse(data)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		fmt.Fprintf(stderr, "%s: %v\n", *path, err)
 		return 2
+	}
+	if *validate {
+		fmt.Fprintf(stdout, "valid spec: %s (%d checks, %s)\n", *path, len(s.Checks()), hash)
+		return 0
 	}
 	r := report.New(s, hash, *image)
 	if err := runCluster(ctx, *kubeconfig, r); err != nil {
@@ -66,6 +73,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	for _, check := range r.Checks {
 		fmt.Fprintf(stdout, "%s %s %s (expected %s, observed %s)\n", check.Verdict, check.Target, check.Destination, check.Expected, check.Outcome)
+		if *explain {
+			fmt.Fprintf(stdout, "  %s\n", probe.Explain(check.Expected, check.Observation))
+			for _, stage := range check.Stages {
+				result := "ok"
+				if !stage.Success {
+					result = "error: " + stage.Error
+				}
+				fmt.Fprintf(stdout, "  %s %s (%d ms): %s\n", stage.Name, stage.Address, stage.DurationMS, result)
+			}
+		}
 		if check.Verdict == "error" {
 			fmt.Fprintln(stderr, check.Error)
 		}

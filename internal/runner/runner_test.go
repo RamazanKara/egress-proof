@@ -216,3 +216,29 @@ func TestRejectIncompleteEvidence(t *testing.T) {
 		}
 	}
 }
+
+func FuzzDecodeObservations(f *testing.F) {
+	for _, seed := range []string{
+		"", "[]", "null", "[{}]",
+		`[{"destination":"example.com","startedAt":"2026-01-01T00:00:00Z","finishedAt":"2026-01-01T00:00:01Z","outcome":"reachable","stages":[{"name":"dns","success":true}]}]`,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		checks := []spec.Check{{Destination: "example.com", Expected: "reachable"}}
+		observations, err := decodeObservations(data, checks)
+		if err != nil {
+			return
+		}
+		if len(observations) != 1 || observations[0].Destination != "example.com" {
+			t.Fatal("accepted incomplete or unrelated observations")
+		}
+		encoded, err := json.Marshal(observations)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := decodeObservations(encoded, checks); err != nil {
+			t.Fatalf("round trip rejected: %v", err)
+		}
+	})
+}

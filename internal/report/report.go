@@ -172,5 +172,8 @@ func (r *Report) Write(dir string) error {
 	if err := os.WriteFile(filepath.Join(dir, "evidence.json"), append(data, '\n'), 0600); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "junit.xml"), append(junit, '\n'), 0600)
+	if err := os.WriteFile(filepath.Join(dir, "junit.xml"), append(junit, '\n'), 0600); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "summary.md"), r.Markdown(), 0600)
 }

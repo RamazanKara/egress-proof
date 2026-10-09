@@ -122,3 +122,26 @@ func TestVerdicts(t *testing.T) {
 		}
 	}
 }
+
+func FuzzParseDestination(f *testing.F) {
+	for _, seed := range []string{"", "example.com", "example.com:443", "[::1]:443", "https://example.com/path?q=yes", "https://[::1]:8443", "a:+80", "https://user:secret@example.com"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, raw string) {
+		d, err := ParseDestination(raw)
+		if err != nil {
+			return
+		}
+		canonical := d.Host
+		if d.Protocol != "dns" {
+			canonical = net.JoinHostPort(d.Host, d.Port)
+			if d.Protocol == "tls" {
+				canonical = "https://" + canonical
+			}
+		}
+		roundtrip, err := ParseDestination(canonical)
+		if err != nil || roundtrip != d {
+			t.Fatalf("destination changed after round trip: %+v => %+v, %v", d, roundtrip, err)
+		}
+	})
+}
