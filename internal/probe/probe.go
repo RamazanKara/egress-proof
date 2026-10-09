@@ -129,6 +129,10 @@ func Check(ctx context.Context, raw string) (obs Observation) {
 			return
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		obs.Error = err.Error()
+		return
+	}
 	slices.Sort(ips)
 	ips = slices.Compact(ips)
 	obs.ResolvedIPs = ips

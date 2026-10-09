@@ -1,20 +1,19 @@
 # Egress Proof
 
 Test Kubernetes egress from short-lived probe pods and keep the evidence. A Go CLI
-using client-go; no operator, CRDs, or NetworkPolicy YAML inspection. It complements
-Regionlock's policy checks and Private AI Platform Kit's egress controls with observed
-DNS, TCP, and TLS results.
+using client-go; no operator, CRDs, or NetworkPolicy YAML inspection. It records
+observed DNS, TCP, and TLS results.
 
 ## Install
 
 Download the archive for your OS and architecture from
 [Releases](https://github.com/RamazanKara/egress-proof/releases), verify it against
 `checksums.txt` (SHA-256), and put `egress-proof` / `egress-proof.exe` on your PATH.
-Releases cover Linux, macOS, and Windows on amd64 and arm64; Windows uses ZIP,
-the others tar.gz. Or install from source with Go 1.25+:
+The v0.2.0 release has Linux, macOS, and Windows archives for amd64 and arm64;
+Windows uses ZIP, the others tar.gz. Or install the released source:
 
 ```sh
-go install github.com/RamazanKara/egress-proof/cmd/egress-proof@v0.1.0
+go install github.com/RamazanKara/egress-proof/cmd/egress-proof@v0.2.0
 egress-proof --help
 ```
 
@@ -22,16 +21,18 @@ The tag-triggered release workflow also publishes
 `ghcr.io/ramazankara/egress-proof:<version-without-v>` for Linux amd64/arm64 and
 updates `:latest` for stable releases. It contains both `/egress-proof` and
 `/egress-proof-probe`; the default entrypoint is the probe. To run the CLI in a
-container, use `--entrypoint /egress-proof`. The existing v0.1.0 tag predates this
-automation: archives and GHCR images require a new release tag containing it.
-Until then, use the [local build](#build) and `egress-proof-probe:dev`.
+container, use `--entrypoint /egress-proof`. The local development image is
+`egress-proof-probe:dev`; see [Build](#build).
 
-## 2-minute example
+## Cluster example
 
 With the CLI installed, a published probe image, and `kubectl` pointing at a
 disposable cluster with an enforcing CNI (Calico or equivalent), run these from
 the checkout. Cluster creation and image pulls are separate setup steps; stock
-kind needs an enforcing CNI, as shown in the [kind example](#real-kind-run).
+kind needs an enforcing CNI, as configured in
+[the kind workflow example](examples/github/kind.yml).
+These cluster-dependent recipes are outside the local unit-test gate; verify
+them on your own disposable cluster before relying on the results.
 
 ```sh
 kubectl apply -f demo/workloads.yaml
@@ -40,23 +41,32 @@ kubectl apply -f demo/policy.yaml
 egress-proof --spec examples/egress.yaml --image ghcr.io/ramazankara/egress-proof:latest --out evidence
 ```
 
-Expect **6 passed, 0 failed, 0 errors**, with `evidence/evidence.json` and
-`evidence/junit.xml`. The demo allows DNS, a local service, and example.com TLS,
+With healthy fixtures and enforced policy, expect **6 passed, 0 failed, 0 errors**,
+with `evidence/evidence.json` and `evidence/junit.xml`. The demo allows DNS,
+a local service, and example.com TLS,
 and blocks a second live service. It needs outbound DNS/HTTPS. Remove the policy
 and rerun the same command: it should exit **1**, with two failed blocked checks.
 Delete the demo with `kubectl delete -f demo/workloads.yaml` when finished.
 
 ## Build
 
-Requires Go 1.25+, a Linux probe image, and a Kubernetes cluster with an enforcing
-CNI such as [Calico](https://docs.tigera.io/calico/latest/getting-started/kubernetes/kind).
-These commands use Windows Go and Docker in Ubuntu WSL:
+Building this checkout requires Go 1.26.9 or newer. The local gate also requires
+GNU Make, a C compiler for Go's race detector, and golangci-lint 2.12.2 on PATH:
+
+```sh
+make lint test build
+go tool cover -func=coverage.out
+```
+
+`lint` runs vet and golangci-lint; `test` runs every package with `-race` and writes
+`coverage.out`; `build` writes both commands to `bin/` for the current OS.
+On Windows the CLI is `bin/egress-proof.exe`. Running it against a cluster requires
+a Linux probe image and an enforcing CNI such as
+[Calico](https://docs.tigera.io/calico/latest/getting-started/kubernetes/kind).
+To build the Linux probe using Windows Go, with Docker in Ubuntu WSL:
 
 ```powershell
 $env:GOMAXPROCS = '2'
-go build -p 2 -o bin/egress-proof.exe ./cmd/egress-proof
-go vet -p 2 ./...
-go test -p 2 -parallel 2 ./...
 $savedOS, $savedArch, $savedCGO = $env:GOOS, $env:GOARCH, $env:CGO_ENABLED
 try {
   $env:GOOS = 'linux'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
@@ -175,77 +185,21 @@ to enable the manually dispatched example. It builds the probe image, installs
 Calico into kind, checks an all-reachable baseline, proves the policy, and verifies
 that removing it fails the gate. Both evidence formats are uploaded even on failure,
 and the disposable cluster is deleted. This stays separate from the one-job CI
-workflow, which runs vet, tests, build, and golangci-lint on main pushes or dispatch.
+workflow, which runs `make lint test build` on pushes or dispatch. GitHub Actions
+availability is not required for the local gate. The separate
+[release workflow](.github/workflows/release.yml) runs on `v*` tags using
+[GoReleaser's configuration](.goreleaser.yml).
 
-For a local release check, use GoReleaser 2.15.4 with Docker Buildx available:
-
-```sh
-GOMAXPROCS=2 goreleaser check
-GOMAXPROCS=2 goreleaser release --snapshot --clean --parallelism 1
-```
-
-Snapshots write archives and checksums to `dist/` and load platform-specific
-container images locally without publishing. On Windows, use native Go/GoReleaser;
-Docker and kind can run through `wsl.exe -d Ubuntu -e ...`, as below.
-If Docker is only available in WSL, use
-`--skip=docker` for the native snapshot and validate the image separately there.
-
-## Real kind run
-
-Validated on 2026-10-07 (Europe/Berlin), using Windows Go 1.26.3, kind 0.31.0,
-Kubernetes 1.36.1, and Calico 3.33.0. Reproduce in a disposable cluster after building:
-
-```powershell
-New-Item -ItemType Directory -Force .work | Out-Null
-$kind = (wsl.exe -d Ubuntu -e sh -lc 'command -v kind').Trim()
-$kubectl = (wsl.exe -d Ubuntu -e sh -lc 'command -v kubectl').Trim()
-function k { wsl.exe -d Ubuntu -e $kubectl --kubeconfig "$wslRoot/.work/kubeconfig" @args }
-wsl.exe -d Ubuntu -e $kind create cluster --name egress-proof-mvp --image kindest/node:v1.36.1 --config "$wslRoot/demo/kind.yaml" --kubeconfig "$wslRoot/.work/kubeconfig"
-wsl.exe -d Ubuntu -e docker update --cpus 2 --memory 3g --memory-swap 3g egress-proof-mvp-control-plane
-k create -f https://raw.githubusercontent.com/projectcalico/calico/v3.33.0/manifests/calico.yaml
-k wait --for=condition=Ready pods --all -n kube-system --timeout=180s
-# Direct import works around kind 0.31's incompatibility with containerd config v4.
-wsl.exe -d Ubuntu -e docker image save --output "$wslRoot/.work/probe.tar" egress-proof-probe:dev
-wsl.exe -d Ubuntu -e docker cp "$wslRoot/.work/probe.tar" egress-proof-mvp-control-plane:/egress-proof-probe.tar
-wsl.exe -d Ubuntu -e docker exec egress-proof-mvp-control-plane ctr --namespace k8s.io images import --platform linux/amd64 /egress-proof-probe.tar
-k apply -f "$wslRoot/demo/workloads.yaml"
-k wait --for=condition=Ready pods --all -n egress-proof-demo --timeout=90s
-k apply -f "$wslRoot/demo/policy.yaml"
-.\bin\egress-proof.exe --spec examples/egress.yaml --kubeconfig .work/kubeconfig --out evidence
-```
-
-Actual output:
-
-```text
-pass egress-proof-demo/client allowed.egress-proof-demo.svc.cluster.local (expected reachable, observed reachable)
-pass egress-proof-demo/client allowed.egress-proof-demo.svc.cluster.local:8080 (expected reachable, observed reachable)
-pass egress-proof-demo/client 10.96.0.50:8080 (expected reachable, observed reachable)
-pass egress-proof-demo/client https://example.com (expected reachable, observed reachable)
-pass egress-proof-demo/client denied.egress-proof-demo.svc.cluster.local:8080 (expected blocked, observed unreachable)
-pass egress-proof-demo/client 10.96.0.51:8080 (expected blocked, observed unreachable)
-6 passed, 0 failed, 0 errors; reports: evidence
-```
-
-Both blocked checks recorded `dial tcp 10.96.0.51:8080: i/o timeout`. Before applying
-the policy, an all-reachable baseline passed 6/6. Removing the policy and rerunning
-the unchanged example produced **4 passed, 2 failed, 0 errors**, exit **1**, and two
-JUnit failures. All probe pods were removed in each run. The demo requires public
-DNS/HTTPS access to example.com; other destinations are local fixtures.
-
-```powershell
-k delete -f "$wslRoot/demo/policy.yaml"
-.\bin\egress-proof.exe --spec examples/egress.yaml --kubeconfig .work/kubeconfig --out evidence/policy-removed
-# Expected exit 1. Delete only this disposable cluster when finished, including on failure.
-wsl.exe -d Ubuntu -e $kind delete cluster --name egress-proof-mvp
-```
+## Limits
 
 This is point-in-time connectivity evidence: a timeout cannot distinguish a policy
 drop from an outage. Use known-live destinations and reachable controls, as in the
 demo. Probes wait two seconds for initial CNI setup; Kubernetes provides no universal
 [policy convergence signal](https://kubernetes.io/docs/concepts/services-networking/network-policies/).
-Linux pod networking is supported; hostNetwork and Windows targets are rejected.
+Linux pod networking is supported; hostNetwork and Windows targets are unsupported.
 Application credentials, custom CA bundles, sidecars, and mesh configuration are not
-cloned; injected probe containers or changed identity cause an error. An unset
+cloned. Admission changes to the probe's labels, service account, node, DNS settings,
+command, environment, or containers cause an error. An unset
 readiness gate keeps probes out of ordinary Service endpoints; Services publishing
 not-ready addresses need separate care. A controller owner reference prevents
 ReplicaSets from adopting probes with matching labels.

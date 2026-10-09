@@ -53,7 +53,7 @@ func TestProbeIdentityAndLifetime(t *testing.T) {
 }
 
 func TestRunLifecycle(t *testing.T) {
-	for _, mode := range []string{"success", "mismatch", "bad-logs", "startup-error", "mutated", "mutated-annotation", "create-error", "cancelled", "delete-error", "no-targets", "host-network"} {
+	for _, mode := range []string{"success", "mismatch", "bad-logs", "startup-error", "mutated", "mutated-annotation", "mutated-node", "mutated-dns-policy", "mutated-dns-config", "mutated-host-aliases", "mutated-command", "mutated-args", "mutated-env", "mutated-env-from", "mutated-container-name", "create-error", "cancelled", "delete-error", "no-targets", "host-network"} {
 		t.Run(mode, func(t *testing.T) {
 			var mu sync.Mutex
 			var created *corev1.Pod
@@ -102,11 +102,29 @@ func TestRunLifecycle(t *testing.T) {
 					}
 					pod.UID = types.UID("probe-uid")
 					created = &pod
-					if mode == "mutated" {
+					switch mode {
+					case "mutated":
 						pod.Labels["admission"] = "extra"
-					}
-					if mode == "mutated-annotation" {
+					case "mutated-annotation":
 						delete(pod.Annotations, runAnnotation)
+					case "mutated-node":
+						pod.Spec.NodeName = "other-node"
+					case "mutated-dns-policy":
+						pod.Spec.DNSPolicy = corev1.DNSDefault
+					case "mutated-dns-config":
+						pod.Spec.DNSConfig = &corev1.PodDNSConfig{Nameservers: []string{"192.0.2.53"}}
+					case "mutated-host-aliases":
+						pod.Spec.HostAliases = []corev1.HostAlias{{IP: "127.0.0.1", Hostnames: []string{"allowed"}}}
+					case "mutated-command":
+						pod.Spec.Containers[0].Command = []string{"/other-probe"}
+					case "mutated-args":
+						pod.Spec.Containers[0].Args = []string{"--other"}
+					case "mutated-env":
+						pod.Spec.Containers[0].Env[0].Value = `["other:80"]`
+					case "mutated-env-from":
+						pod.Spec.Containers[0].EnvFrom = []corev1.EnvFromSource{{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: "other"}}}}
+					case "mutated-container-name":
+						pod.Spec.Containers[0].Name = "other"
 					}
 					if mode == "create-error" {
 						statusError(500, metav1.StatusReasonInternalError)

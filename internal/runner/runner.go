@@ -16,6 +16,7 @@ import (
 	"github.com/RamazanKara/egress-proof/internal/report"
 	"github.com/RamazanKara/egress-proof/internal/spec"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -142,8 +143,13 @@ func runPod(ctx context.Context, client typedcorev1.CoreV1Interface, source *cor
 	pod.UID = created.UID
 	if !maps.Equal(created.Labels, source.Labels) || created.Spec.ServiceAccountName != source.Spec.ServiceAccountName || created.Spec.HostNetwork ||
 		created.Annotations[runAnnotation] != pod.Annotations[runAnnotation] ||
-		len(created.Spec.Containers) != 1 || len(created.Spec.InitContainers) != 0 || created.Spec.Containers[0].Image != image {
-		return nil, fmt.Errorf("admission changed probe identity or injected containers; cannot attest this target")
+		created.Spec.NodeName != pod.Spec.NodeName || created.Spec.DNSPolicy != pod.Spec.DNSPolicy ||
+		!equality.Semantic.DeepEqual(created.Spec.DNSConfig, pod.Spec.DNSConfig) ||
+		!equality.Semantic.DeepEqual(created.Spec.HostAliases, pod.Spec.HostAliases) ||
+		len(created.Spec.Containers) != 1 || len(created.Spec.InitContainers) != 0 || created.Spec.Containers[0].Image != image ||
+		created.Spec.Containers[0].Name != "probe" || len(created.Spec.Containers[0].Command) != 0 || len(created.Spec.Containers[0].Args) != 0 ||
+		len(created.Spec.Containers[0].EnvFrom) != 0 || !equality.Semantic.DeepEqual(created.Spec.Containers[0].Env, pod.Spec.Containers[0].Env) {
+		return nil, fmt.Errorf("admission changed probe identity, configuration, or containers; cannot attest this target")
 	}
 	deadlineCtx, cancel := context.WithTimeout(ctx, time.Duration(*pod.Spec.ActiveDeadlineSeconds)*time.Second)
 	defer cancel()

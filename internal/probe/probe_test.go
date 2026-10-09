@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -19,6 +20,8 @@ func TestDestinations(t *testing.T) {
 		{"[2001:db8::1]:443", "2001:db8::1", "443", "tcp"},
 		{"https://example.com/path?q=yes", "example.com", "443", "tls"},
 		{"https://[::1]:8443", "::1", "8443", "tls"},
+		{"localhost:65535", "localhost", "65535", "tcp"},
+		{strings.Repeat("a", 63) + ".com", strings.Repeat("a", 63) + ".com", "", "dns"},
 	} {
 		t.Run(tt.raw, func(t *testing.T) {
 			d, err := ParseDestination(tt.raw)
@@ -27,10 +30,29 @@ func TestDestinations(t *testing.T) {
 			}
 		})
 	}
-	for _, raw := range []string{"", " example.com", "192.0.2.1", "http://example.com", "https://user:secret@example.com", "https://example.com/#fragment", "https://example.com:", "a:0", "a:65536", "a:http", "a:+80", "::1", "bad/name", "bad..name", "-bad", "a;echo", "https:///path"} {
+	for _, raw := range []string{"", " example.com", "192.0.2.1", "http://example.com", "https://user:secret@example.com", "https://example.com/#fragment", "https://example.com:", "a:0", "a:65536", "a:http", "a:+80", "::1", "bad/name", "bad..name", "-bad", "a;echo", "https:///path", "https://example.com/%zz", "bad-", ".", strings.Repeat("a", 64) + ".com", strings.Repeat("a.", 127) + "a"} {
 		if _, err := ParseDestination(raw); err == nil {
 			t.Errorf("accepted %q", raw)
 		}
+	}
+}
+
+func TestDNS(t *testing.T) {
+	obs := Check(context.Background(), "localhost")
+	if obs.Outcome != "reachable" || len(obs.ResolvedIPs) == 0 || len(obs.Stages) != 1 || obs.Stages[0].Name != "dns" || !obs.Stages[0].Success {
+		t.Fatalf("missing DNS evidence: %+v", obs)
+	}
+	for _, ip := range obs.ResolvedIPs {
+		if net.ParseIP(ip) == nil {
+			t.Errorf("invalid resolved IP %q", ip)
+		}
+	}
+}
+
+func TestInvalidCheck(t *testing.T) {
+	obs := Check(context.Background(), "invalid/path")
+	if obs.Outcome != "error" || obs.Error == "" || len(obs.Stages) != 0 || obs.StartedAt.IsZero() || obs.FinishedAt.Before(obs.StartedAt) {
+		t.Fatalf("invalid destination produced connectivity evidence: %+v", obs)
 	}
 }
 
@@ -75,11 +97,15 @@ func TestTLSCertificateErrorDoesNotProveBlock(t *testing.T) {
 }
 
 func TestCancellationIsNotBlock(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	obs := Check(ctx, "192.0.2.1:443")
-	if obs.Outcome != "error" || Verdict("blocked", obs) != "error" {
-		t.Fatalf("cancellation passed blocked check: %+v", obs)
+	for _, destination := range []string{"192.0.2.1:443", "localhost", "localhost:443"} {
+		t.Run(destination, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			obs := Check(ctx, destination)
+			if obs.Outcome != "error" || obs.Error == "" || Verdict("blocked", obs) != "error" || Verdict("reachable", obs) != "error" {
+				t.Fatalf("cancellation produced connectivity evidence: %+v", obs)
+			}
+		})
 	}
 }
 
